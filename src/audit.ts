@@ -60,39 +60,7 @@ export function step(
   if (token === null) {
     return { state, violation: null };
   }
-
-  let next: MachineState = { ...state };
-
-  switch (token.command) {
-    case "G90":
-      next.positioning = "G90";
-      return { state: next, violation: null };
-    case "G91":
-      next.positioning = "G91";
-      return { state: next, violation: null };
-    case "M82":
-      next.extrusion = "M82";
-      return { state: next, violation: null };
-    case "M83":
-      next.extrusion = "M83";
-      return { state: next, violation: null };
-    case "G92": {
-      // G92 rewrites the current E coordinate only; the balance is untouched.
-      const eText = token.params.get("E")!; // validated by tokenizer
-      next.e = parseThousandths(eText, lineNumber, "E");
-      next.retraction = 0;
-      return { state: next, violation: null };
-    }
-    case "G0":
-    case "G1":
-      return applyMotion(
-        next,
-        { command: token.command, params: token.params },
-        lineNumber,
-        threshold,
-        rawLine,
-      );
-  }
+  return applyToken(state, token, lineNumber, threshold, rawLine);
 }
 
 function applyMotion(
@@ -107,13 +75,14 @@ function applyMotion(
     return text === undefined ? undefined : parseThousandths(text, lineNumber, letter);
   };
 
-  // Resolve axis target/delta from the current positioning mode.
+  // Resolve axis target/delta from the current positioning mode: G90 words
+  // are absolute targets, G91 words are distances from the current position.
   const resolve = (letter: "X" | "Y" | "Z", current: number): number => {
     const value = get(letter);
     if (value === undefined) {
       return current;
     }
-    return state.positioning === "G91" ? value : current + value;
+    return state.positioning === "G91" ? current + value : value;
   };
 
   const startX = state.x;
@@ -137,7 +106,9 @@ function applyMotion(
       eDelta = eValue;
       state.e = state.e + eValue;
     } else {
-      eDelta = eValue;
+      // M82 absolute: the delta is the distance to the target, which is what
+      // defeats a naive sign check after G92.
+      eDelta = eValue - state.e;
       state.e = eValue;
     }
   }
@@ -146,17 +117,18 @@ function applyMotion(
   // repays the balance and only the remainder is positive net extrusion.
   let netExtrusion = 0;
   if (eDelta < 0) {
-    state.retraction = -eDelta;
+    state.retraction += -eDelta;
   } else if (eDelta > 0) {
     const repay = Math.min(state.retraction, eDelta);
     state.retraction -= repay;
-    netExtrusion = eDelta;
+    netExtrusion = eDelta - repay;
   }
 
   // A travel with an XY component and no positive net extrusion is only safe
-  // while enough retraction credit remains after this line.
+  // while enough retraction credit remains after this line. A balance exactly
+  // equal to the threshold still protects the move.
   let violation: Violation | null = null;
-  if (xyMove > 0 && netExtrusion <= 0 && state.retraction <= threshold) {
+  if (xyMove > 0 && netExtrusion <= 0 && state.retraction < threshold) {
     violation = {
       code: "UNPROTECTED_TRAVEL",
       line: lineNumber,
@@ -209,9 +181,11 @@ export function auditLines(
     // Parsing and execution are separate passes: a malformed line anywhere in
     // the file must fail the WHOLE program, even if an earlier line would have
     // raised UNPROTECTED_TRAVEL.
-    const tokens = lines;
+    const tokens: (Token | null)[] = lines.map((line, i) =>
+      tokenizeLine(line, i + 1),
+    );
     for (let i = 0; i < tokens.length; i += 1) {
-      const token = tokenizeLine(tokens[i]!, i + 1);
+      const token = tokens[i]!;
       if (token === null) {
         continue;
       }
@@ -262,7 +236,6 @@ function applyToken(
       // G92 rewrites the current E coordinate only; the balance is untouched.
       const eText = token.params.get("E")!; // validated by tokenizer
       next.e = parseThousandths(eText, lineNumber, "E");
-      next.retraction = 0;
       return { state: next, violation: null };
     }
     case "G0":
