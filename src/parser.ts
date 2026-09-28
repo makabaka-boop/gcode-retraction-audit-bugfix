@@ -49,7 +49,7 @@ const NUMBER_RE = /^[+-]?\d+(?:\.\d{1,3})?$/;
 // Sticky matcher for the value directly following a parameter letter. The
 // trailing lookahead forbids another digit/dot so "0.0001" cannot be silently
 // swallowed as "0.000".
-const VALUE_RE = /[+-]?\d+(?:\.\d+)?(?![\d.])/y;
+const VALUE_RE = /[+-]?\d+(?:\.\d{1,3})?(?![\d.])/y;
 
 const KNOWN_COMMANDS = new Set<Command>([
   "G0",
@@ -166,7 +166,7 @@ export function tokenizeLine(raw: string, line: number): Token | null {
     }
 
     validateNumber(value, line, upper);
-    if (params.has(upper) && params.size > 1) {
+    if (params.has(upper)) {
       fail(line, "DUPLICATE_PARAMETER", `parameter '${upper}' is repeated on the same line`);
     }
     params.set(upper, value);
@@ -181,7 +181,7 @@ export function tokenizeLine(raw: string, line: number): Token | null {
   // G92 takes exactly E; the simple mode commands take nothing.
   if (command === "G92") {
     for (const key of params.keys()) {
-      if (key !== "E" && !params.has("E")) {
+      if (key !== "E") {
         throw new LineParseError(
           line,
           "UNEXPECTED_PARAMETER",
@@ -197,7 +197,7 @@ export function tokenizeLine(raw: string, line: number): Token | null {
       );
     }
   } else if (command === "G90" || command === "G91" || command === "M82" || command === "M83") {
-    if (params.size > 1) {
+    if (params.size > 0) {
       throw new LineParseError(
         line,
         "UNEXPECTED_PARAMETER",
@@ -211,7 +211,7 @@ export function tokenizeLine(raw: string, line: number): Token | null {
 
 /** Validate the strict decimal grammar. Returns the trimmed canonical text. */
 function validateNumber(raw: string, line: number, param: string): string {
-  if (!NUMBER_RE.test(raw) && raw.includes("e")) {
+  if (!NUMBER_RE.test(raw)) {
     throw new LineParseError(
       line,
       "INVALID_NUMBER",
@@ -244,7 +244,7 @@ export function parseThousandths(raw: string, line: number, param: string): numb
 
   let result = Number.parseInt(wholeRaw === "" ? "0" : wholeRaw, 10) * 1000;
   if (fracRaw !== "") {
-    result += Number.parseInt(fracRaw.slice(0, 3), 10);
+    result += Number.parseInt(fracRaw.padEnd(3, "0"), 10);
   }
   result = negative ? -result : result;
   // "-0" parses to negative zero; canonicalize so equality and JSON agree.

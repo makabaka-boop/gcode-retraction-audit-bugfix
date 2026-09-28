@@ -80,7 +80,6 @@ export function step(
       // G92 rewrites the current E coordinate only; the balance is untouched.
       const eText = token.params.get("E")!; // validated by tokenizer
       next.e = parseThousandths(eText, lineNumber, "E");
-      next.retraction = 0;
       return { state: next, violation: null };
     }
     case "G0":
@@ -113,7 +112,7 @@ function applyMotion(
     if (value === undefined) {
       return current;
     }
-    return state.positioning === "G91" ? value : current + value;
+    return state.positioning === "G91" ? current + value : value;
   };
 
   const startX = state.x;
@@ -137,7 +136,7 @@ function applyMotion(
       eDelta = eValue;
       state.e = state.e + eValue;
     } else {
-      eDelta = eValue;
+      eDelta = eValue - state.e;
       state.e = eValue;
     }
   }
@@ -146,17 +145,17 @@ function applyMotion(
   // repays the balance and only the remainder is positive net extrusion.
   let netExtrusion = 0;
   if (eDelta < 0) {
-    state.retraction = -eDelta;
+    state.retraction += -eDelta;
   } else if (eDelta > 0) {
     const repay = Math.min(state.retraction, eDelta);
     state.retraction -= repay;
-    netExtrusion = eDelta;
+    netExtrusion = eDelta - repay;
   }
 
   // A travel with an XY component and no positive net extrusion is only safe
   // while enough retraction credit remains after this line.
   let violation: Violation | null = null;
-  if (xyMove > 0 && netExtrusion <= 0 && state.retraction <= threshold) {
+  if (xyMove > 0 && netExtrusion <= 0 && state.retraction < threshold) {
     violation = {
       code: "UNPROTECTED_TRAVEL",
       line: lineNumber,
@@ -209,13 +208,28 @@ export function auditLines(
     // Parsing and execution are separate passes: a malformed line anywhere in
     // the file must fail the WHOLE program, even if an earlier line would have
     // raised UNPROTECTED_TRAVEL.
-    const tokens = lines;
-    for (let i = 0; i < tokens.length; i += 1) {
-      const token = tokenizeLine(tokens[i]!, i + 1);
+    const parsed: Array<{ lineNumber: number; raw: string; token: Token }> = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const raw = lines[i]!;
+      const lineNumber = i + 1;
+      const token = tokenizeLine(raw, lineNumber);
       if (token === null) {
         continue;
       }
-      const result = applyToken(state, token, i + 1, threshold, lines[i]!);
+      for (const [param, value] of token.params) {
+        parseThousandths(value, lineNumber, param);
+      }
+      parsed.push({ lineNumber, raw, token });
+    }
+
+    for (const item of parsed) {
+      const result = applyToken(
+        state,
+        item.token,
+        item.lineNumber,
+        threshold,
+        item.raw,
+      );
       state = result.state;
       if (result.violation !== null) {
         return { kind: "violation", violation: result.violation, state };
@@ -262,7 +276,6 @@ function applyToken(
       // G92 rewrites the current E coordinate only; the balance is untouched.
       const eText = token.params.get("E")!; // validated by tokenizer
       next.e = parseThousandths(eText, lineNumber, "E");
-      next.retraction = 0;
       return { state: next, violation: null };
     }
     case "G0":

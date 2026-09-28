@@ -84,7 +84,7 @@ export function runCli(
 
   if (result.kind === "violation") {
     return {
-      exitCode: 0,
+      exitCode: 2,
       stdout: `${JSON.stringify(result.violation, null, 2)}\n`,
       stderr: "",
     };
